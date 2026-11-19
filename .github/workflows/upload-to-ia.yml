@@ -1,33 +1,30 @@
-name: Upload folder from Backblaze B2 to Internet Archive
+name: Archive one day of tsumanne threads to IA
 
 on:
-  workflow_dispatch:
-    inputs:
-      item:
-        description: "Internet Archive item identifier"
-        required: true
-        default: "futaba-bulk-archive"
-      b2_bucket:
-        description: "Backblaze B2 bucket name"
-        required: true
-      b2_prefix:
-        description: "Server folder in the bucket (e.g. may). Leave empty for the whole bucket."
-        required: false
-        default: ""
-      make_zip:
-        description: "Upload as one big zip instead of individual files"
-        type: boolean
-        required: true
-        default: true
+  schedule:
+    - cron: "30 18 * * *"   # daily, 18:30 UTC = 03:30 JST (the site's dates are assumed to be JST)
+  workflow_dispatch: {}      # run manually from the Actions tab (e.g. to catch up)
+
+permissions:
+  contents: write   # needed to commit the state files
+
+# One run at a time, so overlapping runs can't race on state files or git push.
+concurrency:
+  group: tsumanne-archive
+  cancel-in-progress: false
+
+env:
+  START_DATE: "2026-11-16"   # first day to archive; only used until state/next_date.txt exists
+  LAG_DAYS: "1"              # only archive days at least this many days old (1 = up to yesterday, JST)
+  MAX_DAYS_PER_RUN: "1"      # raise temporarily to catch up on a backlog (e.g. 7)
 
 jobs:
-  upload:
+  archive:
     runs-on: ubuntu-latest
+    timeout-minutes: 330
     steps:
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+      - name: Check out repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -35,57 +32,75 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install b2 internetarchive
+        run: pip install requests internetarchive
 
-      - name: Download from Backblaze B2
+      # For each day: build one bundle (si_<date>.zip + si_<date>.txt manifest),
+      # upload it, then advance state/next_date.txt.
+      # The date only advances after a successful upload, so a failure (exit 1:
+      # listing page error, exit 2: transient zip error) retries the same day
+      # on the next run. Zips the server reports as 404/410 don't fail the run;
+      # they're recorded in state/failed_ids.txt and skipped from then on.
+      - name: Archive day(s)
         env:
-          B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
-          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
-          BUCKET: ${{ inputs.b2_bucket }}
-          PREFIX: ${{ inputs.b2_prefix }}
+          IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+          IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
         run: |
-          PREFIX="${PREFIX#/}"
-          PREFIX="${PREFIX%/}"
-          if [ -n "$PREFIX" ]; then
-            SRC="b2://${BUCKET}/${PREFIX}"
-          else
-            SRC="b2://${BUCKET}"
-          fi
-          mkdir -p "$RUNNER_TEMP/archive"
-          b2 sync --threads 8 "$SRC" "$RUNNER_TEMP/archive"
-          echo "Downloaded files:"
-          find "$RUNNER_TEMP/archive" -type f | wc -l
-          du -sh "$RUNNER_TEMP/archive"
-          df -h "$RUNNER_TEMP"
+          mkdir -p state downloads
+          TODAY=$(TZ=Asia/Tokyo date +%F)
+          LATEST=$(date -d "$TODAY - $LAG_DAYS days" +%F)
+          echo "Today (JST): $TODAY — newest archivable day: $LATEST"
 
-      - name: Zip folder
-        if: ${{ inputs.make_zip }}
-        env:
-          ITEM: ${{ inputs.item }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/out"
-          cd "$RUNNER_TEMP/archive"
-          # -0 = store only (no compression): faster, and the files are already compressed
-          zip -r -0 -q "$RUNNER_TEMP/out/${ITEM}.zip" .
-          rm -rf "$RUNNER_TEMP/archive"
-          ls -lh "$RUNNER_TEMP/out"
-          df -h "$RUNNER_TEMP"
+          for i in $(seq 1 "$MAX_DAYS_PER_RUN"); do
+            if [ -f state/next_date.txt ]; then DAY=$(cat state/next_date.txt); else DAY="$START_DATE"; fi
 
-      - name: Upload to Internet Archive
-        env:
-          IA_ACCESS_KEY_ID: ${{ secrets.IA_ACCESS_KEY_ID }}
-          IA_SECRET_ACCESS_KEY: ${{ secrets.IA_SECRET_ACCESS_KEY }}
-          ITEM: ${{ inputs.item }}
-          MAKE_ZIP: ${{ inputs.make_zip }}
+            if [[ "$DAY" > "$LATEST" ]]; then
+              echo "Next day to archive ($DAY) isn't old enough yet; nothing to do."
+              break
+            fi
+
+            echo "=== Archiving $DAY ==="
+            python download_zips.py \
+              --base "https://tsumanne.net/si/all" \
+              --date "$DAY" \
+              --out downloads
+
+            echo "Files: $(ls downloads | wc -l)"; du -sh downloads
+
+            # A day with nothing new produces no bundle.
+            if ls downloads/si_*.zip >/dev/null 2>&1; then
+              python upload_to_ia.py \
+                --dir downloads \
+                --identifier "tsumanne-si-archive" \
+                --title "「」ッチー" \
+                --collection opensource_media \
+                --source "https://tsumanne.net/si/"
+            else
+              echo "No new threads for $DAY; nothing to upload."
+            fi
+
+            rm -rf downloads/*
+            date -d "$DAY + 1 day" +%F > state/next_date.txt
+            echo "Next day to archive: $(cat state/next_date.txt)"
+          done
+
+      # Debug aid only — keeps a partial bundle from a failed run.
+      - name: Upload staging folder as build artifact (debug)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsumanne-partial-${{ github.run_id }}
+          path: downloads/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # always(): keep progress from days that finished before a later day failed.
+      - name: Commit updated state
+        if: always()
         run: |
-          if [ "$MAKE_ZIP" = "true" ]; then
-            SRC="$RUNNER_TEMP/out/${ITEM}.zip"
-          else
-            SRC="$RUNNER_TEMP/archive"
-          fi
-          ia upload "$ITEM" "$SRC" \
-            --metadata="description:futaba bulk thread archive" \
-            --checksum \
-            --retries 5
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for f in state/next_date.txt state/failed_ids.txt; do
+            [ -f "$f" ] && git add "$f"
+          done
+          git diff --cached --quiet || git commit -m "Archive progress: next day $(cat state/next_date.txt 2>/dev/null || echo n/a)"
+          git push
