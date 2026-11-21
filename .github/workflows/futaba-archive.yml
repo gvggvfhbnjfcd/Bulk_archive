@@ -1,0 +1,75 @@
+name: Futaba archive worker
+
+# One long-running job (up to 5 hours) that loops over every board, streaming each thread into ONE
+# growing zip on the runner's disk. Between passes it idles until 5 minutes after the pass started
+# (or starts the next pass at once if the pass took longer). When the zip reaches BUNDLE_MAX_GB it is
+# uploaded to the Internet Archive in the background while archiving continues in a new zip.
+# After 5 hours the job seals what it has, uploads it and ends; the next cron tick takes over.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"      # keeps a job queued behind the running one, so there is no gap
+  workflow_dispatch: {}
+
+# Never two workers at once. A tick that fires while a job is running waits (only the newest waiting
+# one is kept) and starts the moment the running job ends.
+concurrency:
+  group: futaba-archive
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # the "already archived" state is saved to the branch futaba-state
+
+env:
+  DATA_DIR: /mnt/futaba-data   # /mnt is the runner's separate ~14 GB scratch disk
+  RUN_HOURS: "5"               # archive this long, then flush + exit (GitHub's hard limit is 6 h)
+  PASS_INTERVAL_SECONDS: "300" # minimum time between the START of two passes
+  BUNDLE_MAX_GB: "5"           # seal + upload at this size (one bundle uploads while the next fills)
+  MIN_FREE_GB: "2"             # stop starting threads if the disk has less free than this
+  BOARDS: "all"
+  MAX_THREADS_PER_RUN: "0"     # 0 = unlimited (per pass)
+  MAX_THREADS_PER_BOARD: "0"
+  MIN_REPLIES: "0"
+  THREAD_CONCURRENCY: "4"
+  ASSET_CONCURRENCY: "4"
+  # Lead boards, rotating per pass: img/b, may/b, jun + dec, none. Then PRIORITY_BOARDS, then the rest.
+  CYCLE_LEADS: "img.2chan.net/b/;may.2chan.net/b/;jun.2chan.net/jun/,dec.2chan.net/dec/;none"
+  PRIORITY_BOARDS: "may.2chan.net/b/,jun.2chan.net/jun/,dec.2chan.net/dec/"
+  IA_ITEM_PREFIX: "futaba-archive"
+  IA_COLLECTION: "opensource"
+  IA_MEDIATYPE: "data"
+  STATE_BRANCH: "futaba-state"
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+  IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350       # 5 h of archiving + time to upload the last bundle
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: futaba/requirements.txt
+
+      - run: pip install -r futaba/requirements.txt
+
+      - name: Prepare the data disk
+        run: |
+          sudo mkdir -p "$DATA_DIR" && sudo chown "$USER" "$DATA_DIR"
+          df -h "$DATA_DIR"
+
+      - name: Archive (loops for RUN_HOURS)
+        working-directory: futaba
+        run: python worker.py
+
+      # Last chance after a cancel, a crash or a failed upload: seal whatever is on disk and upload it.
+      # Does nothing when the main step already flushed everything.
+      - name: Flush leftovers
+        if: always()
+        working-directory: futaba
+        run: python worker.py --flush
