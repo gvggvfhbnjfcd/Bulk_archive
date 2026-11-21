@@ -34,7 +34,7 @@ env:
   REARCHIVE_MIN_DELTA: "2"     # archive a thread AGAIN once it has this many new replies since last time...
   REARCHIVE_GROWTH: "0"        # ...with no extra percentage on top (0 = exactly +2)
   THREAD_CONCURRENCY: "4"
-  ASSET_CONCURRENCY: "14"
+  ASSET_CONCURRENCY: "12"
   # Lead boards, rotating per pass: img/b, may/b, jun + dec, none. Then PRIORITY_BOARDS, then the rest.
   CYCLE_LEADS: "img.2chan.net/b/;may.2chan.net/b/;jun.2chan.net/jun/,dec.2chan.net/dec/;none"
   PRIORITY_BOARDS: "may.2chan.net/b/,jun.2chan.net/jun/,dec.2chan.net/dec/"
