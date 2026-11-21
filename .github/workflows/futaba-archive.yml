@@ -39,7 +39,7 @@ env:
   CYCLE_LEADS: "img.2chan.net/b/;may.2chan.net/b/;jun.2chan.net/jun/,dec.2chan.net/dec/;none"
   PRIORITY_BOARDS: "may.2chan.net/b/,jun.2chan.net/jun/,dec.2chan.net/dec/"
   IA_ITEM_PREFIX: "bulk-futaba-archive"   # items are bulk-futaba-archive1, bulk-futaba-archive2, ...
-  IA_BUNDLES_PER_ITEM: "7"     # after 7 bundles in an item, the next bundle starts the next number
+  IA_BUNDLES_PER_ITEM: "5"     # after 7 bundles in an item, the next bundle starts the next number
   IA_ITEM_START: "1"           # first item number, only used when no saved counter exists yet
   IA_COLLECTION: "opensource"
   IA_MEDIATYPE: "data"
