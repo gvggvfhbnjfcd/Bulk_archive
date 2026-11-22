@@ -25,7 +25,7 @@ env:
   DATA_DIR: /mnt/futaba-data   # /mnt is the runner's separate ~14 GB scratch disk
   RUN_HOURS: "5"               # archive this long, then flush + exit (GitHub's hard limit is 6 h)
   PASS_INTERVAL_SECONDS: "300" # minimum time between the START of two passes
-  BUNDLE_MAX_GB: "5"           # seal + upload at this size (one bundle uploads while the next fills)
+  BUNDLE_MAX_GB: "7"           # seal + upload at this size (one bundle uploads while the next fills)
   MIN_FREE_GB: "2"             # stop starting threads if the disk has less free than this
   BOARDS: "all"
   MAX_THREADS_PER_RUN: "0"     # 0 = unlimited (per pass)
@@ -34,7 +34,7 @@ env:
   REARCHIVE_MIN_DELTA: "2"     # archive a thread AGAIN once it has this many new replies since last time...
   REARCHIVE_GROWTH: "0"        # ...with no extra percentage on top (0 = exactly +2)
   THREAD_CONCURRENCY: "4"
-  ASSET_CONCURRENCY: "4"
+  ASSET_CONCURRENCY: "10"
   # Lead boards, rotating per pass: img/b, may/b, jun + dec, none. Then PRIORITY_BOARDS, then the rest.
   CYCLE_LEADS: "img.2chan.net/b/;may.2chan.net/b/;jun.2chan.net/jun/,dec.2chan.net/dec/;none"
   PRIORITY_BOARDS: "may.2chan.net/b/,jun.2chan.net/jun/,dec.2chan.net/dec/"
