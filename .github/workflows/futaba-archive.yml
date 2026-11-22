@@ -25,7 +25,7 @@ env:
   DATA_DIR: /mnt/futaba-data   # /mnt is the runner's separate ~14 GB scratch disk
   RUN_HOURS: "5"               # archive this long, then flush + exit (GitHub's hard limit is 6 h)
   PASS_INTERVAL_SECONDS: "300" # minimum time between the START of two passes
-  BUNDLE_MAX_GB: "7"           # seal + upload at this size (one bundle uploads while the next fills)
+  BUNDLE_MAX_GB: "5"           # seal + upload at this size (one bundle uploads while the next fills)
   MIN_FREE_GB: "2"             # stop starting threads if the disk has less free than this
   BOARDS: "all"
   MAX_THREADS_PER_RUN: "0"     # 0 = unlimited (per pass)
