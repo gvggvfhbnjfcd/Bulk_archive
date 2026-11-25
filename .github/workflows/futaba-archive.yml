@@ -39,7 +39,7 @@ env:
   CYCLE_LEADS: "img.2chan.net/b/;may.2chan.net/b/;jun.2chan.net/jun/,dec.2chan.net/dec/;none"
   PRIORITY_BOARDS: "may.2chan.net/b/,jun.2chan.net/jun/,dec.2chan.net/dec/"
   IA_ITEM_PREFIX: "bulk-futaba-archive"   # items are bulk-futaba-archive1, bulk-futaba-archive2, ...
-  IA_BUNDLES_PER_ITEM: "8"     # after 7 bundles in an item, the next bundle starts the next number
+  IA_BUNDLES_PER_ITEM: "10"     # after 7 bundles in an item, the next bundle starts the next number
   IA_PROGRESS_SECONDS: "15"    # log an upload progress line this often (0 = off)
   BUNDLE_COMPACT_MIN_MB: "50"  # replaced thread copies in the open bundle: rewrite the zip at seal time if they wasted this much
   IA_ITEM_START: "1"           # first item number, only used when no saved counter exists yet
