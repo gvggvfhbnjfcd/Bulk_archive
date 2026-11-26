@@ -84,6 +84,7 @@ class Run:
         self.lock = threading.Lock()  # guards the bundle file and the counters
         self.added = 0
         self.full_logged = False
+        self.blacklisted = set()  # (host, path, id) of threads skipped by BLACKLIST this job: not fetched again
 
     def can_continue(self) -> bool:
         if stop.is_set():
@@ -115,6 +116,10 @@ def archive_one(board, pick, run: Run) -> str:
     except Exception as e:  # noqa: BLE001
         log_error(f"{label} failed: {e or type(e).__name__}")
         return "failed"
+    if out.blacklisted:
+        run.blacklisted.add((board.host, board.path, pick["id"]))
+        log(f"{label} skipped: {out.reason}")
+        return "blacklisted"
     if not out.ok or not out.entries:
         log_error(f"{label} failed: {out.reason}")
         return "failed"
@@ -143,7 +148,7 @@ def process_board(board, run: Run, deadline: float, remaining: int) -> dict:
     cfg = run.cfg
     label = f"{board.host}{board.path}"
     sort_param, sort_label = random.choice(SORT_CHOICES)
-    summary = {"board": label, "built": 0, "failed": 0}
+    summary = {"board": label, "built": 0, "failed": 0, "blacklisted": 0}
     try:
         entries = fetch_catalog_entries(board, sort_param, cfg)
     except Exception as e:  # noqa: BLE001
@@ -153,6 +158,8 @@ def process_board(board, run: Run, deadline: float, remaining: int) -> dict:
 
     candidates = [e for e in entries if e["replies"] >= cfg.min_replies][: cfg.max_candidates_per_board]
     limit = min(cfg.max_threads_per_board or 10 ** 9, remaining)
+    if run.blacklisted:
+        candidates = [e for e in candidates if (board.host, board.path, e["id"]) not in run.blacklisted]
     picked = pick_threads(board, candidates, cfg, run.state, limit)
 
     nxt = {"i": 0}
@@ -177,7 +184,7 @@ def process_board(board, run: Run, deadline: float, remaining: int) -> dict:
     for t in threads:
         t.join()
     log(f"[{label}] sort={sort_label} catalog={len(entries)} candidates={len(candidates)} "
-        f"picked={len(picked)} built={summary['built']} failed={summary['failed']}")
+        f"picked={len(picked)} built={summary['built']} failed={summary['failed']} blacklisted={summary['blacklisted']}")
     return summary
 
 
