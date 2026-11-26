@@ -73,6 +73,7 @@ ENVIRONMENT
                                  "none" = a turn with no lead boards. Lead boards
                                  go first, then PRIORITY_BOARDS, then the rest.
     MIN_REPLIES [3]
+    BLACKLIST [empty]: comma-separated words; a thread whose text contains any of them is skipped
     MAX_THREADS_PER_RUN [60]     your main egress/cost dial
     MAX_THREADS_PER_BOARD [15]
     MAX_CANDIDATES_PER_BOARD [240]
@@ -220,6 +221,7 @@ class Config:
     user_agent: str
     cxyl_cookie: str
     offload_uploaders: list = field(default_factory=list)
+    blacklist: list = field(default_factory=list)  # compiled regexes, see parse_blacklist()
 
 
 def parse_board_spec(spec: str) -> Board:
@@ -354,7 +356,44 @@ def load_config(require_ia: bool = True) -> Config:
         user_agent=_env("USER_AGENT") or "FutabaThreadArchiver/1.0 (personal archive)",
         cxyl_cookie=_env("CXYL_COOKIE") or "100x100x0x0x0",
         offload_uploaders=resolve_offload_uploaders(),
+        blacklist=parse_blacklist(_env("BLACKLIST")),
     )
+
+
+# ---------- Blacklist ----------
+
+def parse_blacklist(spec: str) -> list:
+    """BLACKLIST is a comma-separated list of words. Each becomes a case-insensitive regex that must
+    not be glued to other ASCII letters/digits, so "D-P" matches "d-p" and "D-P!" but not "add-ps".
+    (Japanese text has no spaces, so only ASCII neighbours count as being part of the same word.)"""
+    out = []
+    for word in spec.split(","):
+        word = word.strip()
+        if word:
+            out.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(word) + r"(?![A-Za-z0-9_])", re.I))
+    return out
+
+
+def visible_text(html: str) -> str:
+    """The text a reader sees: no scripts, styles, comments or tags (so CSS like "background-position"
+    or a file name inside an attribute can never match), with entities decoded."""
+    import html as html_lib
+    t = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", html, flags=re.I | re.S)
+    t = re.sub(r"<!--.*?-->", " ", t, flags=re.S)
+    t = re.sub(r"<[^>]*>", " ", t)
+    return html_lib.unescape(t)
+
+
+def blacklisted_word(html: str, blacklist: list) -> Optional[str]:
+    """Return the first blacklisted word found in the page text, or None."""
+    if not blacklist:
+        return None
+    text = visible_text(html)
+    for rx in blacklist:
+        m = rx.search(text)
+        if m:
+            return m.group(0)
+    return None
 
 
 # ---------- Charset handling ----------
@@ -644,6 +683,7 @@ class ArchiveOutcome:
     asset_count: int = 0
     reason: Optional[str] = None
     entries: Optional[list] = None  # the ZipEntry list (index.html + assets/...), for bundle streaming
+    blacklisted: bool = False       # skipped on purpose: the page text contains a BLACKLIST word
 
 
 def archive_thread(board: Board, thread_id: str, cfg: Config, abort: http_util.Abort,
@@ -653,6 +693,10 @@ def archive_thread(board: Board, thread_id: str, cfg: Config, abort: http_util.A
     if not res.ok:
         return ArchiveOutcome(False, reason=f"thread fetch failed: {res.status}")
     raw_html = decode_buffer(res.body or b"", res.headers.get("content-type"))
+
+    hit = blacklisted_word(raw_html, cfg.blacklist)
+    if hit:  # checked before any asset is downloaded, so a blocked thread costs one page fetch
+        return ArchiveOutcome(False, reason=f'contains blacklisted word "{hit}"', blacklisted=True)
 
     # Bare "<prefix>NNNN.ext" mentions too (including ones only in plain post text).
     offloaded = extract_offloaded_asset_urls(raw_html, cfg.offload_uploaders)
