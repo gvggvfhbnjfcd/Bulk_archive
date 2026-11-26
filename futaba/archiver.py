@@ -73,7 +73,9 @@ ENVIRONMENT
                                  "none" = a turn with no lead boards. Lead boards
                                  go first, then PRIORITY_BOARDS, then the rest.
     MIN_REPLIES [3]
-    BLACKLIST [empty]: comma-separated words; a thread whose text contains any of them is skipped
+    BLACKLIST [empty]: comma-separated words; a thread whose text contains any of them is skipped,
+        except a word with a Japanese character directly before or after it does not count
+    BLACKLIST_ALWAYS [empty]: same, but these words are skipped even right next to Japanese text
     MAX_THREADS_PER_RUN [60]     your main egress/cost dial
     MAX_THREADS_PER_BOARD [15]
     MAX_CANDIDATES_PER_BOARD [240]
@@ -222,6 +224,7 @@ class Config:
     cxyl_cookie: str
     offload_uploaders: list = field(default_factory=list)
     blacklist: list = field(default_factory=list)  # compiled regexes, see parse_blacklist()
+    blacklist_always: list = field(default_factory=list)  # BLACKLIST_ALWAYS: no Japanese-text exemption
 
 
 def parse_board_spec(spec: str) -> Board:
@@ -357,6 +360,7 @@ def load_config(require_ia: bool = True) -> Config:
         cxyl_cookie=_env("CXYL_COOKIE") or "100x100x0x0x0",
         offload_uploaders=resolve_offload_uploaders(),
         blacklist=parse_blacklist(_env("BLACKLIST")),
+        blacklist_always=parse_blacklist(_env("BLACKLIST_ALWAYS")),
     )
 
 
@@ -384,14 +388,27 @@ def visible_text(html: str) -> str:
     return html_lib.unescape(t)
 
 
-def blacklisted_word(html: str, blacklist: list) -> Optional[str]:
-    """Return the first blacklisted word found in the page text, or None."""
-    if not blacklist:
+_JAPANESE_CHAR = re.compile(r"[\u3005\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uff66-\uff9f]")
+
+
+def blacklisted_word(html: str, blacklist: list, always: list = ()) -> Optional[str]:
+    """Return the first blacklisted word found in the page text, or None.
+    `always` words (BLACKLIST_ALWAYS) count wherever they appear. `blacklist` words (BLACKLIST) do not
+    count when a Japanese character (hiragana, katakana, kanji) is directly before OR after them,
+    e.g. "これはDP" and "DPです" pass, while "DP" or "this is DP" is filtered."""
+    if not blacklist and not always:
         return None
     text = visible_text(html)
-    for rx in blacklist:
+    for rx in always:
         m = rx.search(text)
         if m:
+            return m.group(0)
+    for rx in blacklist:
+        for m in rx.finditer(text):
+            before = text[m.start() - 1] if m.start() > 0 else ""
+            after = text[m.end()] if m.end() < len(text) else ""
+            if (before and _JAPANESE_CHAR.match(before)) or (after and _JAPANESE_CHAR.match(after)):
+                continue
             return m.group(0)
     return None
 
@@ -694,7 +711,7 @@ def archive_thread(board: Board, thread_id: str, cfg: Config, abort: http_util.A
         return ArchiveOutcome(False, reason=f"thread fetch failed: {res.status}")
     raw_html = decode_buffer(res.body or b"", res.headers.get("content-type"))
 
-    hit = blacklisted_word(raw_html, cfg.blacklist)
+    hit = blacklisted_word(raw_html, cfg.blacklist, cfg.blacklist_always)
     if hit:  # checked before any asset is downloaded, so a blocked thread costs one page fetch
         return ArchiveOutcome(False, reason=f'contains blacklisted word "{hit}"', blacklisted=True)
 
