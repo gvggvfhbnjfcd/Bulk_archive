@@ -34,7 +34,7 @@ env:
   REARCHIVE_MIN_DELTA: "2"     # archive a thread AGAIN once it has this many new replies since last time...
   REARCHIVE_GROWTH: "0"        # ...with no extra percentage on top (0 = exactly +2)
   THREAD_CONCURRENCY: "4"
-  BLACKLIST: "D-P, DP, D.P"         # words; a thread containing one is not archived, unless a Japanese character is right before/after it
+  BLACKLIST: "D-P, DP, D.P, po-rn"         # words; a thread containing one is not archived, unless a Japanese character is right before/after it
   BLACKLIST_ALWAYS: "shorturls.nl, urlab.ro"
   ASSET_CONCURRENCY: "10"
   # Lead boards, rotating per pass: img/b, may/b, jun + dec, none. Then PRIORITY_BOARDS, then the rest.
