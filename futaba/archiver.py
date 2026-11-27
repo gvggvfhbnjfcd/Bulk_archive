@@ -76,6 +76,9 @@ ENVIRONMENT
     BLACKLIST [empty]: comma-separated words; a thread whose text contains any of them is skipped,
         except a word with a Japanese character directly before or after it does not count
     BLACKLIST_ALWAYS [empty]: same, but these words are skipped even right next to Japanese text
+    BLACKLIST_REPLY [empty]: a reply containing any of these words is left out of the archived page,
+        together with its images; if the OPENING POST contains one, the whole thread is skipped.
+        Same Japanese-text and slash exemptions as BLACKLIST
     MAX_THREADS_PER_RUN [60]     your main egress/cost dial
     MAX_THREADS_PER_BOARD [15]
     MAX_CANDIDATES_PER_BOARD [240]
@@ -225,6 +228,7 @@ class Config:
     offload_uploaders: list = field(default_factory=list)
     blacklist: list = field(default_factory=list)  # compiled regexes, see parse_blacklist()
     blacklist_always: list = field(default_factory=list)  # BLACKLIST_ALWAYS: no Japanese-text exemption
+    blacklist_reply: list = field(default_factory=list)   # BLACKLIST_REPLY: drops just the matching replies
 
 
 def parse_board_spec(spec: str) -> Board:
@@ -361,6 +365,7 @@ def load_config(require_ia: bool = True) -> Config:
         offload_uploaders=resolve_offload_uploaders(),
         blacklist=parse_blacklist(_env("BLACKLIST")),
         blacklist_always=parse_blacklist(_env("BLACKLIST_ALWAYS")),
+        blacklist_reply=parse_blacklist(_env("BLACKLIST_REPLY")),
     )
 
 
@@ -395,7 +400,8 @@ def blacklisted_word(html: str, blacklist: list, always: list = ()) -> Optional[
     """Return the first blacklisted word found in the page text, or None.
     `always` words (BLACKLIST_ALWAYS) count wherever they appear. `blacklist` words (BLACKLIST) do not
     count when a Japanese character (hiragana, katakana, kanji) is directly before OR after them,
-    e.g. "これはDP" and "DPです" pass, while "DP" or "this is DP" is filtered."""
+    e.g. "これはDP" and "DPです" pass, while "DP" or "this is DP" is filtered. A word wrapped in slashes,
+    like "/DP/", also does not count (`always` words still do)."""
     if not blacklist and not always:
         return None
     text = visible_text(html)
@@ -409,8 +415,50 @@ def blacklisted_word(html: str, blacklist: list, always: list = ()) -> Optional[
             after = text[m.end()] if m.end() < len(text) else ""
             if (before and _JAPANESE_CHAR.match(before)) or (after and _JAPANESE_CHAR.match(after)):
                 continue
+            if before == "/" and after == "/":  # a board path such as "/DP/" is not the word itself
+                continue
             return m.group(0)
     return None
+
+
+def opening_post_html(html: str) -> str:
+    """The opening post: from the thread's <div class="thre"> up to the first reply table (or the end
+    marker / end of page when there are no replies). The form, ads and footer around it are excluded."""
+    m = re.search(r'<div\b[^>]*\bclass\s*=\s*["\']?thre\b', html, re.I)
+    start = m.start() if m else 0
+    end = len(html)
+    marker = html.find("<!--スレッド終了-->", start)
+    if marker != -1:
+        end = marker
+    for t in _TABLE_RE.finditer(html, start, end):
+        if _REPLY_CELL_RE.search(t.group(0)):
+            end = t.start()
+            break
+    return html[start:end]
+
+
+# A Futaba reply is its own <table> whose reply cell has class "rtd"; the opening post is not in a table.
+_TABLE_RE = re.compile(r"<table\b[^>]*>(?:(?!<table\b).)*?</table\s*>", re.I | re.S)
+_REPLY_CELL_RE = re.compile(r"<td\b[^>]*\bclass\s*=\s*[\"']?rtd\b", re.I)
+
+
+def strip_blacklisted_replies(html: str, blacklist: list) -> tuple:
+    """Remove every reply whose text contains a BLACKLIST_REPLY word (same matching rules as BLACKLIST).
+    Returns (html, number_removed). Done before assets are collected, so images that only appear in a
+    removed reply are never downloaded. The opening post is never removed here."""
+    if not blacklist:
+        return html, 0
+    removed = 0
+
+    def drop(m):
+        nonlocal removed
+        block = m.group(0)
+        if _REPLY_CELL_RE.search(block) and blacklisted_word(block, blacklist):
+            removed += 1
+            return ""
+        return block
+
+    return _TABLE_RE.sub(drop, html), removed
 
 
 # ---------- Charset handling ----------
@@ -701,6 +749,7 @@ class ArchiveOutcome:
     reason: Optional[str] = None
     entries: Optional[list] = None  # the ZipEntry list (index.html + assets/...), for bundle streaming
     blacklisted: bool = False       # skipped on purpose: the page text contains a BLACKLIST word
+    replies_removed: int = 0        # replies left out because they contain a BLACKLIST_REPLY word
 
 
 def archive_thread(board: Board, thread_id: str, cfg: Config, abort: http_util.Abort,
@@ -714,6 +763,12 @@ def archive_thread(board: Board, thread_id: str, cfg: Config, abort: http_util.A
     hit = blacklisted_word(raw_html, cfg.blacklist, cfg.blacklist_always)
     if hit:  # checked before any asset is downloaded, so a blocked thread costs one page fetch
         return ArchiveOutcome(False, reason=f'contains blacklisted word "{hit}"', blacklisted=True)
+
+    hit = blacklisted_word(opening_post_html(raw_html), cfg.blacklist_reply)
+    if hit:  # a BLACKLIST_REPLY word in the opening post: there is no thread without it, so skip the thread
+        return ArchiveOutcome(False, reason=f'opening post contains blacklisted word "{hit}"', blacklisted=True)
+
+    raw_html, replies_removed = strip_blacklisted_replies(raw_html, cfg.blacklist_reply)
 
     # Bare "<prefix>NNNN.ext" mentions too (including ones only in plain post text).
     offloaded = extract_offloaded_asset_urls(raw_html, cfg.offload_uploaders)
@@ -760,7 +815,7 @@ def archive_thread(board: Board, thread_id: str, cfg: Config, abort: http_util.A
 
     zip_entries.insert(0, ZipEntry("index.html", html.encode("utf-8"), compress=True))
     return ArchiveOutcome(True, zip_bytes=build_zip(zip_entries) if build else None,
-                          asset_count=len(fetched), entries=zip_entries)
+                          asset_count=len(fetched), entries=zip_entries, replies_removed=replies_removed)
 
 
 # ---------- Spool + Internet Archive upload ----------
